@@ -1,36 +1,29 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+## 1. Overview
 
-## Getting Started
+TaskBeam is a platform that integrates Model Context Protocol (MCP) Servers directly into the apps people already use every day such as Gmail, Twitter/X, Instagram, Farcaster, Slack, Notion, etc.
+Our mission is to eliminate installation friction and enable users to run MCP-powered actions without needing and standalone clients.
+**Think of it as “Zapier for MCP”, a universal bridge between MCP servers and mainstream applications.**
 
-First, run the development server:
+## 2. The Problem
 
-```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
-```
+- Currently, MCP Servers face three major adoption barriers:
+- **Platform Lock-in:** Users can only access MCP through limited clients (e.g., Claude Desktop).
+- **High Friction Onboarding:** Installing extra software is a major barrier for casual and enterprise users.
+- **No Presence where Users already Work:** MCP is not embedded inside everyday productivity, communication, and social platforms.
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+These limitations restrict MCP to early adopters and technical users, leaving mainstream adoption untapped.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## 3. The Solution
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+TaskBeam creates a cloud-based interface layer that:
 
-## Learn More
+- Connects MCP servers to popular applications via APIs and OAuth integrations.
+- Lets users trigger and execute MCP actions natively inside Gmail, Twitter, Instagram and other popular applications.
+- Remove the needs for installing standalone MCP clients.
+- Supports cross-application automation (e.g., “Summarize my unread Gmail and post updates to my team Slack.”).
 
-To learn more about Next.js, take a look at the following resources:
+This approach:
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- Expands the MCP ecosystem beyond the niche.
+- Enables mainstream consumer and enterprise adoption.
+- Positions MCP as an invisible but essential background capability.
