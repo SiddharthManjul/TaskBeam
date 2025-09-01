@@ -1,247 +1,256 @@
-pragma circom 2.1.6;
+pragma circom 2.0.0;
 
-// ========================================
-// INCLUDE STATEMENTS MUST COME FIRST
-// ========================================
-include "circomlib/circuits/comparators.circom";
-
-// ========================================
-// TEMPLATE DEFINITIONS
-// ========================================
-
-// Template: Range Checking (0 <= value <= max_value)
+// Utility template for range checking (0 <= value <= max_value)
 template RangeCheck(max_bits) {
     signal input value;
     signal input max_value;
-
-    component lt = LessThan(max_bits);
-    lt.in[0] <== value + 1;
-    lt.in[1] <== max_value + 1;
-    lt.out === 1;
+    signal output valid;
+    
+    // Check if value <= max_value using bit decomposition
+    component lt = LessThanEq(max_bits);
+    lt.in[0] <== value;
+    lt.in[1] <== max_value;
+    valid <== lt.out;
 }
 
-// Template: Safe Division with Scaling
-template ScaledDivision(scale_bits) {
+// Template for safe division with scaling factor
+template SafeDivision(scale_bits) {
     signal input numerator;
     signal input denominator;
     signal output quotient;
-
-    signal scaled_numerator <== numerator * (1 << scale_bits);
-
-    // Denominator must not be zero
-    component is_zero = IsZero();
-    is_zero.in <== denominator;
-    is_zero.out === 0;
-
-    // Calculate quotient
-    quotient <-- scaled_numerator / denominator;
-    quotient * denominator === scaled_numerator;
+    signal output remainder;
+    
+    // Constraint: numerator = quotient * denominator + remainder
+    // With scaling: scaled_quotient = (numerator * 2^scale_bits) / denominator
+    
+    signal scaled_numerator <== numerator * (2 ** scale_bits);
+    
+    // Ensure denominator is not zero
+    component non_zero = IsZero();
+    non_zero.in <== denominator;
+    non_zero.out === 0; // Force denominator to be non-zero
+    
+    // Division constraint
+    scaled_numerator === quotient * denominator + remainder;
+    
+    // Remainder must be less than denominator
+    component range_check = LessThan(32);
+    range_check.in[0] <== remainder;
+    range_check.in[1] <== denominator;
+    range_check.out === 1;
 }
 
-// Template: Weighted Sum calculation
+// Template for weighted sum calculation
 template WeightedSum(n) {
     signal input values[n];
     signal input weights[n];
-    signal output weighted_sum;
-
-    // Ensure weights sum to 1000 (representing 1.0)
-    var weight_sum = 0;
+    signal output sum;
+    
+    component multipliers[n];
+    signal partial_sums[n+1];
+    partial_sums[0] <== 0;
+    
     for (var i = 0; i < n; i++) {
-        weight_sum += weights[i];
+        multipliers[i] = Num2Bits(64);
+        multipliers[i].in <== values[i] * weights[i];
+        partial_sums[i+1] <== partial_sums[i] + values[i] * weights[i];
     }
-    weight_sum === 1000;
-
-    // Calculate weighted sum
-    var sum = 0;
-    for (var i = 0; i < n; i++) {
-        sum += values[i] * weights[i];
-    }
-    weighted_sum <== sum;
+    
+    sum <== partial_sums[n];
 }
 
-// Template: Sigmoid Approximation for Response Time
-template SigmoidApproximation() {
-    signal input x;
-    signal output sigmoid_out;
-
-    // Linear sigmoid approximation: sigmoid(x) ≈ 0.5 + x/4, clamped [0,1]
-    signal scaled_x <== x * 250; // Scale for fixed-point
-    signal linear_approx <== 500 + scaled_x;
-
-    component clamp_low = GreaterEqualThan(16);
-    clamp_low.in[0] <== linear_approx;
-    clamp_low.in[1] <== 0;
-
-    component clamp_high = LessEqualThan(16);
-    clamp_high.in[0] <== linear_approx;
-    clamp_high.in[1] <== 1000;
-
-    signal clamped_low <== clamp_low.out * linear_approx;
-    signal clamped_high <== clamp_high.out * clamped_low + (1 - clamp_high.out) * 1000;
-    signal final_clamped <== (1 - clamp_low.out) * 0 + clamp_low.out * clamped_high;
-
-    sigmoid_out <== final_clamped;
+// Template for sigmoid function approximation for response time scoring
+template SigmoidApprox() {
+    signal input response_time;
+    signal input threshold;
+    signal input alpha; // Steepness parameter
+    signal output score;
+    
+    // Simplified sigmoid approximation: 1 / (1 + exp(alpha * (x - threshold)))
+    // For circuit efficiency, we use a piecewise linear approximation
+    
+    signal diff <== response_time - threshold;
+    signal scaled_diff <== diff * alpha;
+    
+    // Piecewise linear approximation of sigmoid
+    // If diff <= -2: score = 1000 (scaled by 1000)
+    // If -2 < diff < 2: score = 500 + (-250 * diff)  
+    // If diff >= 2: score = 0
+    
+    component lt1 = LessThanEq(32);
+    lt1.in[0] <== scaled_diff + 2000; // Adding offset for positive comparison
+    lt1.in[1] <== 0;
+    
+    component lt2 = LessThanEq(32);
+    lt2.in[0] <== 2000;
+    lt2.in[1] <== scaled_diff + 2000;
+    
+    // Linear interpolation in middle region
+    signal middle_score <== 500000 - (250 * scaled_diff); // Scaled by 1000
+    
+    // Select appropriate score based on ranges
+    score <== lt1.out * 1000000 + (1 - lt1.out) * (1 - lt2.out) * 0 + (1 - lt1.out) * lt2.out * middle_score;
 }
 
-// ========================================
-// MAIN CIRCUIT TEMPLATE
-// ========================================
-
-template AgentReputationVerifier() {
-    // Public inputs
-    signal input reputation_threshold;  // minimum required reputation (0-1000)
-    signal input current_timestamp;
-    signal input verification_period;
-
-    // Private inputs - Task completion metrics
-    signal private input tasks_completed;
-    signal private input total_tasks_assigned;
-
-    // Private inputs - Accuracy metrics  
-    signal private input correct_outputs;
-    signal private input total_outputs;
-
-    // Private inputs - Uptime metrics
-    signal private input operational_time;
-    signal private input total_time;
-
-    // Private inputs - User review metrics
-    signal private input review_scores[10];   // up to 10 reviews, 0-1000
-    signal private input review_weights[10];  // up to 10 weights
-    signal private input num_reviews;         // actual number of reviews
-
-    // Private inputs - Response time metrics
-    signal private input avg_response_time;
-    signal private input response_threshold;
-
+// Main reputation verification circuit
+template AIAgentReputationVerifier() {
+    // Private inputs (agent's actual performance data)
+    signal input tasks_completed;
+    signal input total_tasks_assigned;
+    signal input correct_outputs;
+    signal input total_outputs;
+    signal input operational_time;
+    signal input total_time;
+    signal input total_review_score;
+    signal input total_review_weight;
+    signal input avg_response_time;
+    
+    // Public inputs (verification parameters)
+    signal input min_reputation_threshold; // Minimum reputation required
+    signal input response_time_threshold;
+    signal input alpha_param; // Sigmoid steepness
+    
+    // Weights for different metrics (scaled by 1000)
+    signal input weight_task_completion;    // Default: 250 (25%)
+    signal input weight_accuracy;           // Default: 250 (25%)
+    signal input weight_uptime;            // Default: 200 (20%)
+    signal input weight_reviews;           // Default: 200 (20%)
+    signal input weight_response_time;     // Default: 100 (10%)
+    
     // Output
-    signal output reputation_proof;
-
-    // ========================================
-    // METRIC CALCULATIONS
-    // ========================================
-
-    // Task Completion Rate
-    component task_div = ScaledDivision(10);
+    signal output reputation_verified; // 1 if reputation >= threshold, 0 otherwise
+    
+    // Internal signals for metric calculations
+    signal task_completion_rate;
+    signal accuracy_score;
+    signal uptime_ratio;
+    signal user_review_score;
+    signal response_time_score;
+    signal final_reputation;
+    
+    // === CONSTRAINT 1: Task Completion Rate Calculation ===
+    component task_div = SafeDivision(16);
     task_div.numerator <== tasks_completed;
     task_div.denominator <== total_tasks_assigned;
-    signal task_completion_rate <== task_div.quotient;
-
-    component task_range = RangeCheck(16);
+    task_completion_rate <== task_div.quotient;
+    
+    // Range check: 0 <= task_completion_rate <= 1 (scaled)
+    component task_range = RangeCheck(32);
     task_range.value <== task_completion_rate;
-    task_range.max_value <== 1024;
-
-    // Accuracy Score
-    component acc_div = ScaledDivision(10);
-    acc_div.numerator <== correct_outputs;
-    acc_div.denominator <== total_outputs;
-    signal accuracy_score <== acc_div.quotient;
-
-    component acc_range = RangeCheck(16);
-    acc_range.value <== accuracy_score;
-    acc_range.max_value <== 1024;
-
-    // Uptime Ratio
-    component uptime_div = ScaledDivision(10);
+    task_range.max_value <== 65536; // 2^16 for scaling factor
+    task_range.valid === 1;
+    
+    // === CONSTRAINT 2: Accuracy Score Calculation ===
+    component accuracy_div = SafeDivision(16);
+    accuracy_div.numerator <== correct_outputs;
+    accuracy_div.denominator <== total_outputs;
+    accuracy_score <== accuracy_div.quotient;
+    
+    // Range check for accuracy
+    component accuracy_range = RangeCheck(32);
+    accuracy_range.value <== accuracy_score;
+    accuracy_range.max_value <== 65536;
+    accuracy_range.valid === 1;
+    
+    // === CONSTRAINT 3: Uptime Ratio Calculation ===
+    component uptime_div = SafeDivision(16);
     uptime_div.numerator <== operational_time;
     uptime_div.denominator <== total_time;
-    signal uptime_ratio <== uptime_div.quotient;
-
-    component uptime_range = RangeCheck(16);
+    uptime_ratio <== uptime_div.quotient;
+    
+    // Range check for uptime
+    component uptime_range = RangeCheck(32);
     uptime_range.value <== uptime_ratio;
-    uptime_range.max_value <== 1024;
-
-    // User Review Score (weighted average)
-    signal review_sum;
-    signal weight_sum;
-
-    var temp_review_sum = 0;
-    var temp_weight_sum = 0;
-
-    for (var i = 0; i < 10; i++) {
-        // Use ternary-like logic to include only valid reviews
-        component include_check = LessThan(4);
-        include_check.in[0] <== i;
-        include_check.in[1] <== num_reviews;
-
-        temp_review_sum += include_check.out * review_scores[i] * review_weights[i];
-        temp_weight_sum += include_check.out * review_weights[i];
-    }
-
-    review_sum <== temp_review_sum;
-    weight_sum <== temp_weight_sum;
-
-    component review_div = ScaledDivision(10);
-    review_div.numerator <== review_sum;
-    review_div.denominator <== weight_sum;
-    signal user_review_score <== review_div.quotient;
-
-    // Response Time Score
-    signal response_diff <== avg_response_time - response_threshold;
-    component sigmoid = SigmoidApproximation();
-    sigmoid.x <== response_diff;
-    signal response_time_score <== sigmoid.sigmoid_out;
-
-    // ========================================
-    // FINAL REPUTATION CALCULATION
-    // ========================================
-
-    component reputation_calc = WeightedSum(5);
-    reputation_calc.values[0] <== task_completion_rate;
-    reputation_calc.values[1] <== accuracy_score;
-    reputation_calc.values[2] <== uptime_ratio;
-    reputation_calc.values[3] <== user_review_score;
-    reputation_calc.values[4] <== response_time_score;
-
-    // Weights (sum to 1000 for fixed-point arithmetic)
-    reputation_calc.weights[0] <== 250;  // 25% task completion
-    reputation_calc.weights[1] <== 250;  // 25% accuracy
-    reputation_calc.weights[2] <== 200;  // 20% uptime
-    reputation_calc.weights[3] <== 200;  // 20% user reviews
-    reputation_calc.weights[4] <== 100;  // 10% response time
-
-    signal final_reputation <== reputation_calc.weighted_sum;
-
-    // ========================================
-    // VERIFICATION AND CONSTRAINTS
-    // ========================================
-
-    // Threshold comparison
-    component threshold_check = GreaterEqualThan(16);
+    uptime_range.max_value <== 65536;
+    uptime_range.valid === 1;
+    
+    // === CONSTRAINT 4: User Review Score Calculation ===
+    component review_div = SafeDivision(16);
+    review_div.numerator <== total_review_score;
+    review_div.denominator <== total_review_weight;
+    user_review_score <== review_div.quotient;
+    
+    // Range check for reviews
+    component review_range = RangeCheck(32);
+    review_range.value <== user_review_score;
+    review_range.max_value <== 65536;
+    review_range.valid === 1;
+    
+    // === CONSTRAINT 5: Response Time Score Calculation ===
+    component sigmoid = SigmoidApprox();
+    sigmoid.response_time <== avg_response_time;
+    sigmoid.threshold <== response_time_threshold;
+    sigmoid.alpha <== alpha_param;
+    response_time_score <== sigmoid.score;
+    
+    // === CONSTRAINT 6: Weight Validation ===
+    // Ensure weights sum to 1000 (representing 100% with scaling)
+    signal weight_sum <== weight_task_completion + weight_accuracy + weight_uptime + weight_reviews + weight_response_time;
+    weight_sum === 1000;
+    
+    // === CONSTRAINT 7: Final Reputation Calculation ===
+    component weighted_calc = WeightedSum(5);
+    weighted_calc.values[0] <== task_completion_rate;
+    weighted_calc.values[1] <== accuracy_score;
+    weighted_calc.values[2] <== uptime_ratio;
+    weighted_calc.values[3] <== user_review_score;
+    weighted_calc.values[4] <== response_time_score;
+    
+    weighted_calc.weights[0] <== weight_task_completion;
+    weighted_calc.weights[1] <== weight_accuracy;
+    weighted_calc.weights[2] <== weight_uptime;
+    weighted_calc.weights[3] <== weight_reviews;
+    weighted_calc.weights[4] <== weight_response_time;
+    
+    // Scale down the final result
+    component final_div = SafeDivision(10);
+    final_div.numerator <== weighted_calc.sum;
+    final_div.denominator <== 1000;
+    final_reputation <== final_div.quotient;
+    
+    // === CONSTRAINT 8: Threshold Verification ===
+    component threshold_check = GreaterEqualThan(32);
     threshold_check.in[0] <== final_reputation;
-    threshold_check.in[1] <== reputation_threshold;
-    reputation_proof <== threshold_check.out;
-
-    // Time validity check
-    component time_check = LessEqualThan(32);
-    time_check.in[0] <== current_timestamp;
-    time_check.in[1] <== verification_period;
-    time_check.out === 1;
-
-    // Logic consistency constraints
-    tasks_completed <= total_tasks_assigned;
-    correct_outputs <= total_outputs;
-    operational_time <= total_time;
-
-    // Ensure positive denominators
-    component pos_check1 = GreaterThan(16);
-    pos_check1.in[0] <== total_tasks_assigned;
-    pos_check1.in[1] <== 0;
-    pos_check1.out === 1;
-
-    component pos_check2 = GreaterThan(16);
-    pos_check2.in[0] <== total_outputs;
-    pos_check2.in[1] <== 0;
-    pos_check2.out === 1;
-
-    component pos_check3 = GreaterThan(16);
-    pos_check3.in[0] <== total_time;
-    pos_check3.in[1] <== 0;
-    pos_check3.out === 1;
+    threshold_check.in[1] <== min_reputation_threshold;
+    reputation_verified <== threshold_check.out;
+    
+    // === CONSTRAINT 9: Logical Consistency Checks ===
+    // Tasks completed cannot exceed total tasks assigned
+    component task_consistency = LessThanEq(32);
+    task_consistency.in[0] <== tasks_completed;
+    task_consistency.in[1] <== total_tasks_assigned;
+    task_consistency.out === 1;
+    
+    // Correct outputs cannot exceed total outputs
+    component output_consistency = LessThanEq(32);
+    output_consistency.in[0] <== correct_outputs;
+    output_consistency.in[1] <== total_outputs;
+    output_consistency.out === 1;
+    
+    // Operational time cannot exceed total time
+    component time_consistency = LessThanEq(32);
+    time_consistency.in[0] <== operational_time;
+    time_consistency.in[1] <== total_time;
+    time_consistency.out === 1;
+    
+    // === CONSTRAINT 10: Non-zero Denominators ===
+    // Ensure all denominators are positive
+    component zero_check1 = IsZero();
+    zero_check1.in <== total_tasks_assigned;
+    zero_check1.out === 0;
+    
+    component zero_check2 = IsZero();
+    zero_check2.in <== total_outputs;
+    zero_check2.out === 0;
+    
+    component zero_check3 = IsZero();
+    zero_check3.in <== total_time;
+    zero_check3.out === 0;
+    
+    component zero_check4 = IsZero();
+    zero_check4.in <== total_review_weight;
+    zero_check4.out === 0;
 }
 
-// ========================================
-// MAIN COMPONENT INSTANTIATION
-// ========================================
-
-component main {public [reputation_threshold, current_timestamp, verification_period]} = AgentReputationVerifier();
+// Component instantiation
+component main = AIAgentReputationVerifier();
